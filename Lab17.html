@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WBB Rosters Hierarchical Structure</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f4f6f8;
+      color: #222;
+    }
+
+    h1 {
+      text-align: center;
+      margin: 20px 0 8px 0;
+      font-size: 30px;
+    }
+
+    p {
+      text-align: center;
+      margin: 0 0 20px 0;
+      color: #555;
+    }
+
+    #chart {
+      width: 100%;
+      height: 90vh;
+      overflow: auto;
+      background: white;
+      border-top: 1px solid #ddd;
+    }
+
+    .node circle {
+      fill: #4f81bd;
+      stroke: #1f3c5a;
+      stroke-width: 1.5px;
+    }
+
+    .node text {
+      font-size: 12px;
+      dominant-baseline: middle;
+    }
+
+    .link {
+      fill: none;
+      stroke: #bbb;
+      stroke-width: 1.5px;
+    }
+
+    .tooltip {
+      position: absolute;
+      background: rgba(0, 0, 0, 0.85);
+      color: white;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      pointer-events: none;
+      opacity: 0;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Women’s Basketball Rosters Hierarchy</h1>
+  <p>Conference → Team → Position → Player</p>
+
+  <div id="chart"></div>
+  <div class="tooltip" id="tooltip"></div>
+
+  <script>
+    const width = 1800;
+    const dx = 22;
+    const dy = 220;
+
+    const tree = d3.tree().nodeSize([dx, dy]);
+    const diagonal = d3.linkHorizontal()
+      .x(d => d.y)
+      .y(d => d.x);
+
+    const svg = d3.select("#chart")
+      .append("svg")
+      .attr("width", width)
+      .style("font", "12px sans-serif")
+      .style("user-select", "none");
+
+    const gLink = svg.append("g")
+      .attr("fill", "none")
+      .attr("stroke", "#999")
+      .attr("stroke-opacity", 0.6)
+      .attr("stroke-width", 1.5);
+
+    const gNode = svg.append("g")
+      .attr("cursor", "pointer");
+
+    const tooltip = d3.select("#tooltip");
+
+    d3.csv("wbb_rosters_2022_23.csv").then(data => {
+      data = data.filter(d => d.conference && d.team && d.name);
+
+      const rootData = {
+        name: "WBB Rosters 2022-23",
+        children: []
+      };
+
+      const conferenceMap = new Map();
+
+      data.forEach(d => {
+        const conference = d.conference || "Unknown Conference";
+        const team = d.team || "Unknown Team";
+        const position = d.primary_position || d.position_clean || d.position || "Unknown Position";
+        const player = d.name || "Unknown Player";
+
+        if (!conferenceMap.has(conference)) {
+          conferenceMap.set(conference, {
+            name: conference,
+            children: [],
+            teamMap: new Map()
+          });
+        }
+
+        const confNode = conferenceMap.get(conference);
+
+        if (!confNode.teamMap.has(team)) {
+          confNode.teamMap.set(team, {
+            name: team,
+            children: [],
+            posMap: new Map()
+          });
+        }
+
+        const teamNode = confNode.teamMap.get(team);
+
+        if (!teamNode.posMap.has(position)) {
+          teamNode.posMap.set(position, {
+            name: position,
+            children: []
+          });
+        }
+
+        const posNode = teamNode.posMap.get(position);
+
+        posNode.children.push({
+          name: player,
+          year: d.year_clean || d.year || "N/A",
+          jersey: d.jersey || "N/A",
+          hometown: d.hometown_clean || d.hometown || "N/A",
+          height: d.height_clean || "N/A",
+          nodeType: "player"
+        });
+      });
+
+      conferenceMap.forEach(confNode => {
+        confNode.teamMap.forEach(teamNode => {
+          teamNode.posMap.forEach(posNode => {
+            teamNode.children.push(posNode);
+          });
+          delete teamNode.posMap;
+          confNode.children.push(teamNode);
+        });
+        delete confNode.teamMap;
+        rootData.children.push(confNode);
+      });
+
+      const root = d3.hierarchy(rootData);
+      root.x0 = dy / 2;
+      root.y0 = 0;
+
+      root.descendants().forEach((d, i) => {
+        d.id = i;
+        d._children = d.children;
+
+        if (d.depth > 1) {
+          d.children = null;
+        }
+      });
+
+      function update(source) {
+        const duration = 400;
+        const nodes = root.descendants().reverse();
+        const links = root.links();
+
+        tree(root);
+
+        let left = root;
+        let right = root;
+        root.eachBefore(node => {
+          if (node.x < left.x) left = node;
+          if (node.x > right.x) right = node;
+        });
+
+        const height = right.x - left.x + 80;
+
+        svg.transition()
+          .duration(duration)
+          .attr("height", height)
+          .attr("viewBox", [-60, left.x - 40, width, height]);
+
+        const node = gNode.selectAll("g")
+          .data(nodes, d => d.id);
+
+        const nodeEnter = node.enter().append("g")
+          .attr("class", "node")
+          .attr("transform", d => `translate(${source.y0},${source.x0})`)
+          .attr("fill-opacity", 0)
+          .attr("stroke-opacity", 0)
+          .on("click", (event, d) => {
+            d.children = d.children ? null : d._children;
+            update(d);
+          })
+          .on("mousemove", (event, d) => {
+            if (d.data.nodeType === "player") {
+              tooltip
+                .style("opacity", 1)
+                .html(`
+                  <strong>${d.data.name}</strong><br>
+                  Year: ${d.data.year}<br>
+                  Jersey: ${d.data.jersey}<br>
+                  Height: ${d.data.height}<br>
+                  Hometown: ${d.data.hometown}
+                `)
+                .style("left", (event.pageX + 12) + "px")
+                .style("top", (event.pageY - 20) + "px");
+            }
+          })
+          .on("mouseleave", () => {
+            tooltip.style("opacity", 0);
+          });
+
+        nodeEnter.append("circle")
+          .attr("r", 6)
+          .attr("fill", d => {
+            if (d.depth === 0) return "#2c3e50";
+            if (d.depth === 1) return "#4f81bd";
+            if (d.depth === 2) return "#7fb3d5";
+            if (d.depth === 3) return "#a9dfbf";
+            return "#ccc";
+          });
+
+        nodeEnter.append("text")
+          .attr("dy", "0.31em")
+          .attr("x", d => d._children ? -12 : 12)
+          .attr("text-anchor", d => d._children ? "end" : "start")
+          .text(d => d.data.name)
+          .clone(true).lower()
+          .attr("stroke", "white")
+          .attr("stroke-width", 3);
+
+        const nodeUpdate = node.merge(nodeEnter).transition()
+          .duration(duration)
+          .attr("transform", d => `translate(${d.y},${d.x})`)
+          .attr("fill-opacity", 1)
+          .attr("stroke-opacity", 1);
+
+        const nodeExit = node.exit().transition()
+          .duration(duration)
+          .remove()
+          .attr("transform", d => `translate(${source.y},${source.x})`)
+          .attr("fill-opacity", 0)
+          .attr("stroke-opacity", 0);
+
+        const link = gLink.selectAll("path")
+          .data(links, d => d.target.id);
+
+        const linkEnter = link.enter().append("path")
+          .attr("class", "link")
+          .attr("d", d => {
+            const o = { x: source.x0, y: source.y0 };
+            return diagonal({ source: o, target: o });
+          });
+
+        link.merge(linkEnter).transition()
+          .duration(duration)
+          .attr("d", diagonal);
+
+        link.exit().transition()
+          .duration(duration)
+          .remove()
+          .attr("d", d => {
+            const o = { x: source.x, y: source.y };
+            return diagonal({ source: o, target: o });
+          });
+
+        root.eachBefore(d => {
+          d.x0 = d.x;
+          d.y0 = d.y;
+        });
+      }
+
+      update(root);
+    }).catch(error => {
+      d3.select("#chart")
+        .append("p")
+        .style("color", "red")
+        .style("padding", "20px")
+        .text("Error loading CSV file. Make sure wbb_rosters_2022_23.csv is in the same folder as this HTML file.");
+      console.error(error);
+    });
+  </script>
+
+</body>
+</html>
